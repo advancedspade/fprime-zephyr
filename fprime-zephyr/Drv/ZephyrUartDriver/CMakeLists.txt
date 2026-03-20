@@ -10,4 +10,13 @@ set(SOURCE_FILES
   "${CMAKE_CURRENT_LIST_DIR}/ZephyrUartDriver.cpp"
 )
 
+###
+# ASpade Library Setup
+# Custom C++ library code.
+###
+set(MOD_DEPS
+    aspade
+)
+
 register_fprime_module()
+
