@@ -14,7 +14,7 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/sys/ring_buffer.h>
 
-#define RING_BUF_SIZE 4096
+#define RING_BUF_SIZE 1024
 
 namespace Zephyr {
 
@@ -22,7 +22,7 @@ namespace Zephyr {
     public ZephyrUartDriverComponentBase
   {
 
-    const FwSizeType SERIAL_BUFFER_SIZE = 512;
+    static constexpr FwSizeType SERIAL_BUFFER_SIZE = 64;
 
     public:
 
@@ -76,6 +76,7 @@ namespace Zephyr {
 
         U8 m_ring_buf_data[RING_BUF_SIZE];
         struct ring_buf m_ring_buf;
+        bool m_rx_throttled; 
     };
 
 } // end namespace Zephyr
