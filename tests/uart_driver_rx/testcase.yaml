@@ -1,0 +1,10 @@
+tests:
+  fprime_zephyr.uart_driver.rx:
+    platform_allow:
+      - native_sim
+      - native_sim/native/64
+    # A livelock (the bug this guards) never returns: fail on the timeout instead of hanging the run
+    timeout: 30
+    tags:
+      - uart
+      - fprime

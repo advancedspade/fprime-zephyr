@@ -22,6 +22,8 @@ namespace Zephyr {
     public ZephyrUartDriverComponentBase
   {
 
+    //! Bytes read from the UART FIFO per pass of serial_cb (stack buffer). schedIn hands the whole ring to
+    //! recv in one buffer, so this does not limit the uplink rate.
     static constexpr FwSizeType SERIAL_BUFFER_SIZE = 64;
 
     public:

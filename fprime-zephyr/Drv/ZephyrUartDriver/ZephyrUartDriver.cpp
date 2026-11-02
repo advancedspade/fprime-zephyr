@@ -66,7 +66,14 @@ namespace Zephyr {
         struct ZephyrUartDriver *self = reinterpret_cast<ZephyrUartDriver *>(user_data);
 
         while (uart_irq_update(dev) && uart_irq_is_pending(dev)) {
-            if (!self->m_rx_throttled && uart_irq_rx_ready(dev)) {
+            // Only RX is serviced (TX interrupts stay disabled). While throttled, or with nothing to read, leave the
+            // loop: a pending source this callback does not consume would otherwise keep it spinning. With the NUS
+            // UART (uart_bt) this callback runs on a work queue above every F´ thread, so a spin here starved the
+            // whole application while the NUS RX ring stayed full.
+            if (self->m_rx_throttled || !uart_irq_rx_ready(dev)) {
+                break;
+            }
+            {
                 int recv_len, rb_len;
                 uint8_t buffer[SERIAL_BUFFER_SIZE];
                 size_t len = MIN(ring_buf_space_get(&self->m_ring_buf),
@@ -106,23 +113,29 @@ namespace Zephyr {
             U32 context
         )
     {
-        if (ring_buf_is_empty(&this->m_ring_buf)) {
-            return; 
+        // Hand everything received since the last call to recv in one buffer. Draining a fixed 64 bytes per call
+        // capped the uplink at 64 B x rate (1.28 KB/s at 20 Hz), about an NTRIP RTCM stream, so the ring filled.
+        const U32 pending = ring_buf_size_get(&this->m_ring_buf);
+        if (pending > 0U) {
+            Fw::Buffer recv_buffer = this->allocate_out(0, pending);
+            if ((recv_buffer.getData() == nullptr) || (recv_buffer.getSize() == 0U)) {
+                // No buffer available: keep the bytes (and the throttle), retry on the next call
+                return;
+            }
+            const U32 recv_size = ring_buf_get(&this->m_ring_buf, recv_buffer.getData(), recv_buffer.getSize());
+            if (recv_size == 0U) {
+                this->deallocate_out(0, recv_buffer);
+            } else {
+                recv_buffer.setSize(recv_size);
+                LOG_INF("schedIn: %u bytes -> recv_out", recv_size);
+                recv_out(0, recv_buffer, Drv::ByteStreamStatus::OP_OK);
+            }
         }
-        Fw::Buffer recv_buffer = this->allocate_out(0, SERIAL_BUFFER_SIZE);
-
-        U32 recv_size = ring_buf_get(&this->m_ring_buf, recv_buffer.getData(), recv_buffer.getSize());
-        if (recv_size == 0) {
-            // No data received, deallocate buffer
-            this->deallocate_out(0, recv_buffer);
-        } else {
-            recv_buffer.setSize(recv_size);
-            LOG_INF("schedIn: %u bytes -> recv_out", recv_size);
-            recv_out(0, recv_buffer, Drv::ByteStreamStatus::OP_OK);
-        }
-        if (this->m_rx_throttled) {
-            uart_irq_rx_enable(this->m_dev);
+        if (this->m_rx_throttled && (ring_buf_space_get(&this->m_ring_buf) > 0U)) {
+            // Clear the flag before re-enabling RX: uart_irq_rx_enable() may run serial_cb synchronously (uart_bt
+            // submits it to a higher-priority work queue that preempts this thread), and it must see RX unthrottled.
             this->m_rx_throttled = false;
+            uart_irq_rx_enable(this->m_dev);
         }
     }
 
