@@ -1,0 +1,18 @@
+/ {
+	euart0: uart-emul {
+		compatible = "zephyr,uart-emul";
+		status = "okay";
+		current-speed = <0>;
+		rx-fifo-size = <4096>;
+		tx-fifo-size = <256>;
+	};
+
+	/* TX tests (src/tx.cpp): a small TX FIFO that only the test drains, like a stalled BLE NUS link */
+	euart1: uart-emul-tx {
+		compatible = "zephyr,uart-emul";
+		status = "okay";
+		current-speed = <0>;
+		rx-fifo-size = <64>;
+		tx-fifo-size = <256>;
+	};
+};
