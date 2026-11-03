@@ -10,6 +10,7 @@
 #include "Fw/Types/Assert.hpp"
 #include <Fw/FPrimeBasicTypes.hpp>
 #include <zephyr/logging/log.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(ZephyrUartDriver, LOG_LEVEL_NONE);
 
@@ -23,7 +24,12 @@ namespace Zephyr {
         ZephyrUartDriver(
             const char *const compName
         ) : ZephyrUartDriverComponentBase(compName), 
-        m_rx_throttled(false)
+        m_rx_throttled(false),
+        m_tx_timeout_ms(0U),
+        m_tx_tail_len(0U),
+        m_tx_tail_sent(0U),
+        m_tx_dropped_frames(0U),
+        m_tx_truncated_frames(0U)
     {
     }
 
@@ -59,6 +65,10 @@ namespace Zephyr {
         if (this->isConnected_ready_OutputPort(0)) {
             this->ready_out(0);
         }
+    }
+
+    void ZephyrUartDriver::setTxTimeout(U32 timeout_ms) {
+        this->m_tx_timeout_ms = timeout_ms;
     }
 
     void ZephyrUartDriver::serial_cb(const struct device *dev, void *user_data)
@@ -146,10 +156,57 @@ namespace Zephyr {
         )
     {
         LOG_INF("TX: %u bytes", (unsigned int)sendBuffer.getSize());
-        for (U32 i = 0; i < sendBuffer.getSize(); i++) {
-            uart_poll_out(this->m_dev, sendBuffer.getData()[i]);
+        const U8* const data = sendBuffer.getData();
+        const U32 size = static_cast<U32>(sendBuffer.getSize());
+        if (this->m_tx_timeout_ms == 0U) {
+            for (U32 i = 0; i < size; i++) {
+                uart_poll_out(this->m_dev, data[i]);
+            }
+            return Drv::ByteStreamStatus::OP_OK;
+        }
+        // Bounded send: uart_poll_out on a full FIFO waits for as long as the link takes to drain (uart_bt sleeps
+        // 1 ms per byte), which can hold the caller (ComQueue's thread) for seconds on a slow BLE link.
+        const int64_t deadline = k_uptime_get() + static_cast<int64_t>(this->m_tx_timeout_ms);
+        // A frame partly queued by an earlier send goes first: the receiver already has its head
+        if (this->m_tx_tail_sent < this->m_tx_tail_len) {
+            this->m_tx_tail_sent += this->fillUntil(&this->m_tx_tail[this->m_tx_tail_sent],
+                                                    this->m_tx_tail_len - this->m_tx_tail_sent, deadline);
+            if (this->m_tx_tail_sent < this->m_tx_tail_len) {
+                this->m_tx_dropped_frames++;
+                return Drv::ByteStreamStatus::SEND_RETRY;
+            }
+        }
+        this->m_tx_tail_len = 0U;
+        this->m_tx_tail_sent = 0U;
+        const U32 queued = this->fillUntil(data, size, deadline);
+        if ((queued == 0U) && (size > 0U)) {
+            this->m_tx_dropped_frames++;
+            return Drv::ByteStreamStatus::SEND_RETRY;
+        }
+        const U32 rest = size - queued;
+        if (rest > TX_TAIL_SIZE) {
+            this->m_tx_truncated_frames++;
+        } else if (rest > 0U) {
+            (void)memcpy(this->m_tx_tail, &data[queued], rest);
+            this->m_tx_tail_len = rest;
         }
         return Drv::ByteStreamStatus::OP_OK;
+    }
+
+    U32 ZephyrUartDriver::fillUntil(const U8* data, U32 size, int64_t deadline) {
+        U32 sent = 0U;
+        while (sent < size) {
+            const int written = uart_fifo_fill(this->m_dev, &data[sent], static_cast<int>(size - sent));
+            if (written > 0) {
+                sent += static_cast<U32>(written);
+                continue;
+            }
+            if ((written < 0) || (k_uptime_get() >= deadline)) {
+                break;
+            }
+            k_sleep(K_MSEC(1));
+        }
+        return sent;
     }
 
     void ZephyrUartDriver ::recvReturnIn_handler(const FwIndexType portNum, Fw::Buffer &returnBuffer) {

@@ -9,6 +9,7 @@ project(fprime_zephyr_uart_driver_rx_test)
 
 target_sources(app PRIVATE
     src/main.cpp
+    src/tx.cpp
     ../../fprime-zephyr/Drv/ZephyrUartDriver/ZephyrUartDriver.cpp
 )
 
